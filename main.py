@@ -11,37 +11,51 @@ from tqdm import trange
 from tqdm.auto import tqdm
 from classifier import Classifier
 from itertools import compress
+from pathlib import Path
 import sys
 
 
 def main(args):
+	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])
+
 	train_tfm = transforms.Compose([
-		transforms.Resize((128, 128)),
+		transforms.Resize((224, 224)),
 		# You may add some transforms here.
 		#transforms.GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 5)),
 		transforms.RandomRotation(degrees=(0, 180)),
-		transforms.Pad(padding=10),
 		transforms.ToTensor(),
+		normalize
 	])
 
 	test_tfm = transforms.Compose([
-		transforms.Resize((128, 128)),
+		transforms.Resize((224, 224)),
 		transforms.ToTensor(),
+		normalize
 	])
 
+
 	train_set = ImageFolder(args.data_path + 'TRAIN', transform=train_tfm)
-	trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
 	eval_set = ImageFolder(args.data_path + 'TEST', transform=test_tfm)
+	train_set = [(X, torch.tensor(y)) for (X, y) in train_set]
+	eval_set = [(X, torch.tensor(y)) for (X, y) in eval_set]
+	trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
 	evalloader = DataLoader(eval_set, batch_size=args.batch_size, shuffle=False)
-	#train_imshow(trainloader)
-	#test_set
-	#for x in train_set:
-	#	print(x)
-	#	sys.exit()
 
 	device = "cuda" if torch.cuda.is_available() else "cpu"
+	#create model
 	torch.hub._validate_not_a_forked_repo=lambda a,b,c: True
-	model = Classifier().to(device) if args.model == 'Classifier' else torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=True)
+	model = Classifier().to(device)
+	if args.model == 'resnet18':
+		model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=True) 
+    	#for param in model.parameters():
+    	#	param.requires_grad = False
+		model.fc = nn.Sequential(
+					nn.Linear(512, 128),
+					nn.ReLU(),
+					nn.Linear(128, 2)).to(device)
+
+
 	loss_fn = nn.CrossEntropyLoss()
 	optimizer = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=0.01)
 
@@ -51,11 +65,10 @@ def main(args):
 		if args.do_semi:
 			# Obtain pseudo-labels for unlabeled data using trained model.
 			pseudo_set = get_pseudo_labels(eval_set, model, device, threshold=0.8)
-
 			# Construct a new dataset and a data loader for training.
 			# This is used in semi-supervised learning only.
 			concat_dataset = ConcatDataset([train_set, pseudo_set])
-			train_loader = DataLoader(concat_dataset, batch_size=batch_size, shuffle=True)
+			trainloader = DataLoader(concat_dataset, batch_size=args.batch_size, shuffle=True)
 		eval_loop(evalloader, model, device)
 		torch.save(model.state_dict(), "./model/{}".format(epoch))
 		pass
@@ -67,8 +80,8 @@ def train_loop(dataloader, model, loss_fn, optimizer, device):
 		X, y = X.to(device), y.to(device)
 		pred = model(X)
 		loss = loss_fn(pred, y)
-		print('batch: ', batch)
-		print('loss: ', loss)
+		#print('batch: ', batch)
+		#print('loss: ', loss)
 		#Backpropagation
 		optimizer.zero_grad()
 		loss.backward()
@@ -103,10 +116,9 @@ def train_imshow(loader):
 	print('images shape on batch size = {}'.format(images.size()))
 	print('labels shape on batch size = {}'.format(labels.size()))
 
-def get_pseudo_labels(dataset, model, device, threshold=0.65):
+def get_pseudo_labels(dataset, model, device, threshold=0.8):
 	# This functions generates pseudo-labels of a dataset using given model.
 	# It returns an instance of DatasetFolder containing images whose prediction confidences exceed a given threshold.
-	device = "cuda" if torch.cuda.is_available() else "cpu"
 	# Construct a data loader.
 	data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
 	# Make sure the model is in eval mode.
@@ -124,21 +136,18 @@ def get_pseudo_labels(dataset, model, device, threshold=0.65):
 
 		# Obtain the probability distributions by applying softmax on logits.
 		probs = softmax(logits)
-		print('probs: ', probs)
-		for prob in probs:
-			print('prob: ', prob)
-			print('argmax: ', prob.argmax(dim=0))
 
 		# Filter the data and construct a new dataset.
-		newdata = tuple(compress(img, [prob[torch.argmax(prob)] > threshold for prob in probs]),
-						 prob.argmax(dim=0))
-		print(newdata[0])
-		sys.exit()
-		#dataset.extend(newdata)
-
+		pseudo_set = []
+		for i in range(len(img)):
+			if probs[i].argmax(dim=0) > threshold:
+				pseudo_set.append(tuple([img[i], probs[i].argmax(dim=0)] ) )
+				
 	# # Turn off the eval mode.
+	#for img in pseudo_set:
+	#	print('img: ', img[0].shape)
 	model.train()
-	return pseudo_set
+	return tuple(pseudo_set)
 
 
 def parse_args():
@@ -156,22 +165,23 @@ def parse_args():
 	parser.add_argument(
 		"--num_epoch",
 		type=int,
-		default=10,
+		default=30,
 	)
 	parser.add_argument(
 		"--model",
 		type=str,
-		default='Classifier'
+		default='classifier'
 	)
 	parser.add_argument(
 		"--do_semi",
 		type=bool,
-		default=False,
+		default=True,
 	)
 
 	args = parser.parse_args()
 	return args
 
 if __name__ == "__main__":
+	Path("./model").mkdir(parents=True, exist_ok=True)
 	args = parse_args()
 	main(args)
