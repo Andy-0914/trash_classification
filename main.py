@@ -22,7 +22,7 @@ def main(args):
 	train_tfm = transforms.Compose([
 		transforms.Resize((224, 224)),
 		# You may add some transforms here.
-		#transforms.GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 5)),
+		transforms.GaussianBlur(kernel_size=(7, 7), sigma=(0.1, 5)),
 		transforms.RandomRotation(degrees=(0, 180)),
 		transforms.ToTensor(),
 		normalize
@@ -34,15 +34,18 @@ def main(args):
 		normalize
 	])
 
-
+	#args.data_path = ./DATASET/
 	train_set = ImageFolder(args.data_path + 'TRAIN', transform=train_tfm)
 	eval_set = ImageFolder(args.data_path + 'TEST', transform=test_tfm)
+
+
 	train_set = [(X, torch.tensor(y)) for (X, y) in train_set]
 	eval_set = [(X, torch.tensor(y)) for (X, y) in eval_set]
 	trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
 	evalloader = DataLoader(eval_set, batch_size=args.batch_size, shuffle=False)
 
 	device = "cuda" if torch.cuda.is_available() else "cpu"
+	#print(device)
 	#create model
 	torch.hub._validate_not_a_forked_repo=lambda a,b,c: True
 	model = Classifier().to(device)
@@ -57,7 +60,7 @@ def main(args):
 
 
 	loss_fn = nn.CrossEntropyLoss()
-	optimizer = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=0.01)
+	optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
 
 	epoch_pbar = trange(args.num_epoch, desc="Epoch")
 	for epoch in epoch_pbar:
@@ -80,8 +83,8 @@ def train_loop(dataloader, model, loss_fn, optimizer, device):
 		X, y = X.to(device), y.to(device)
 		pred = model(X)
 		loss = loss_fn(pred, y)
-		#print('batch: ', batch)
-		#print('loss: ', loss)
+		print('batch: ', batch)
+		print('loss: ', loss)
 		#Backpropagation
 		optimizer.zero_grad()
 		loss.backward()
@@ -129,8 +132,6 @@ def get_pseudo_labels(dataset, model, device, threshold=0.8):
 	for batch in tqdm(data_loader):
 		img, _ = batch
 
-		# Forward the data
-		# Using torch.no_grad() accelerates the forward process.
 		with torch.no_grad():
 			logits = model(img.to(device))
 
@@ -142,10 +143,8 @@ def get_pseudo_labels(dataset, model, device, threshold=0.8):
 		for i in range(len(img)):
 			if probs[i].argmax(dim=0) > threshold:
 				pseudo_set.append(tuple([img[i], probs[i].argmax(dim=0)] ) )
-				
+
 	# # Turn off the eval mode.
-	#for img in pseudo_set:
-	#	print('img: ', img[0].shape)
 	model.train()
 	return tuple(pseudo_set)
 
@@ -160,7 +159,7 @@ def parse_args():
 	parser.add_argument(
 		"--batch_size",
 		type=int,
-		default=128,
+		default=32,
 	)
 	parser.add_argument(
 		"--num_epoch",
@@ -175,7 +174,7 @@ def parse_args():
 	parser.add_argument(
 		"--do_semi",
 		type=bool,
-		default=True,
+		default=False,
 	)
 
 	args = parser.parse_args()

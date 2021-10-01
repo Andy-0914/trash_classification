@@ -26,7 +26,9 @@ class Classifier(nn.Module):
             nn.MaxPool2d(8, 8, 0),
         )
         self.fc_layers = nn.Sequential(
-            nn.Linear(216, 32),
+            nn.Linear(216, 64),
+            nn.LeakyReLU(),
+            nn.Linear(64, 32),
             nn.LeakyReLU(),
             nn.Linear(32, 32),
             nn.LeakyReLU(),
