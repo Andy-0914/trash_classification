@@ -42,7 +42,7 @@ def main(args):
 	train_set = [(X, torch.tensor(y)) for (X, y) in train_set]
 	eval_set = [(X, torch.tensor(y)) for (X, y) in eval_set]
 	trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
-	evalloader = DataLoader(eval_set, batch_size=args.batch_size, shuffle=False)
+	evalloader = DataLoader(eval_set, batch_size=1, shuffle=False)
 
 	device = "cuda" if torch.cuda.is_available() else "cpu"
 	#print(device)
@@ -94,14 +94,30 @@ def eval_loop(dataloader, model, device):
 	model.eval()
 	correct = 0
 	total = 0
+	correct_trash = 0
+	total_trash = 0
 	with torch.no_grad():
 		for images, labels in dataloader:
 			outputs = model(images)
 			_, predicted = torch.max(outputs.data, 1)
+			#print('labels: ', labels.numpy()[0])
+			#sys.exit()
+			#if labels == 0:
+
 			total += labels.size(0)
 			correct += (predicted == labels).sum().item()
+			if args.check_recycle_acc:
+				predicted = predicted.numpy()
+				labels = labels.numpy()
+				for i in range(len(labels)):
+				 	if labels[i] == 0:
+				 		total_trash += 1
+				 		if predicted == 0:
+				 			correct_trash += 1
+
 			#print('total: ', total)
 			#print('correct: ', correct)
+	print('Accuracy of trash: ', correct_trash / total_trash)
 	print('Accuracy of the network on the %d test images: %d %%' % (len(dataloader.dataset),
 		100 * correct / total))
 
@@ -164,7 +180,7 @@ def parse_args():
 	parser.add_argument(
 		"--num_epoch",
 		type=int,
-		default=30,
+		default=3,
 	)
 	parser.add_argument(
 		"--model",
@@ -175,6 +191,11 @@ def parse_args():
 		"--do_semi",
 		type=bool,
 		default=False,
+	)
+	parser.add_argument(
+		"--check_recycle_acc",
+		type=bool,
+		default=True,
 	)
 
 	args = parser.parse_args()
