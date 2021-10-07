@@ -47,22 +47,15 @@ class Classifier(nn.Module):
         x = self.fc_layers(x)
         return x
 
-"""class Classifier(nn.Module):
+class LogisticClassifier(nn.Module):
     def __init__(self):
-        super(Classifier, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(8, 8)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16, 100)
-        self.fc2 = nn.Linear(100, 50)
-        self.fc3 = nn.Linear(50, 2)
+        super(LogisticClassifier, self).__init__()
+        self.linear_layer = nn.Linear(224*224*3, 1)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16)
-        #print('x shape: ', x.shape)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x"""
+        x = x.flatten(1)
+        x = self.linear_layer(x)
+        x = self.sigmoid(x)
+        #print(x)
+        return x.flatten(0)
