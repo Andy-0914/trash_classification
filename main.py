@@ -14,14 +14,18 @@ from itertools import compress
 from pathlib import Path
 import sys
 
+CNN = ['classifier', 'resnet18', 'resnet50']
+REGRESSION = ['logistic', 'linear']
 
 def main(args):
+
+	"""Define the transformation we wish to apply.In the transformation, we also did data augmentation 
+	by adding guassian blur and random rotation. Finally, we normalize it to the format of Resnet """
 	normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
 								 std=[0.229, 0.224, 0.225])
 
 	train_tfm = transforms.Compose([
 		transforms.Resize((224, 224)),
-		# You may add some transforms here.
 		transforms.GaussianBlur(kernel_size=(7, 7), sigma=(0.1, 5)),
 		transforms.RandomRotation(degrees=(0, 180)),
 		transforms.ToTensor(),
@@ -34,166 +38,118 @@ def main(args):
 		normalize
 	])
 
-	#args.data_path = ./DATASET/
+	#Create the dataset using ImageFolder, which also applies the transformation defined above
 	train_set = ImageFolder(args.data_path + 'TRAIN', transform=train_tfm)
 	eval_set = ImageFolder(args.data_path + 'TEST', transform=test_tfm)
 
-
-	#train_set = [(X, torch.tensor(y)) for (X, y) in train_set]
-	#eval_set = [(X, torch.tensor(y)) for (X, y) in eval_set]
+	#Create Dataloader object so that our data is iterable and ready to train
 	trainloader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
 	evalloader = DataLoader(eval_set, batch_size=1, shuffle=False)
 
+	#Specify whether we are training on GPU or CPU
 	device = "cuda" if torch.cuda.is_available() else "cpu"
 
 	#create model
 	torch.hub._validate_not_a_forked_repo=lambda a,b,c: True
-	model = Classifier().to(device)
-	if args.model == 'resnet18':
-		model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=True) 
+	if args.model == 'classifier':
+		model = Classifier().to(device)
+	elif args.model == 'resnet18' or args.model == 'resnet50':
+		if args.model == 'resnet18':
+			model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=True) 
+		else:
+			model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True) 
 		num_ftrs = model.fc.in_features
+		#Append linear layers to the last layer of ResNet to do transfer learning
 		model.fc = nn.Sequential(
 					nn.Linear(num_ftrs, 128),
 					nn.ReLU(),
 					nn.Linear(128, 2)).to(device)
+		model.to(device)
 	elif args.model == 'logistic':
 		model = LogisticClassifier().to(device)
+	else:
+		model = LinearClassifier().to(device)
 
-	
-	loss_fn = nn.BCELoss() if args.model == 'logistic' else nn.CrossEntropyLoss()
-	optimizer = torch.optim.SGD(model.parameters(), lr=0.01, weight_decay=0.01) if args.model == 'logistic' else torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
+	#Create loss function
+	if args.model in CNN:
+		loss_fn = nn.CrossEntropyLoss()
+	elif args.model == 'logistic':
+		loss_fn =  nn.BCELoss()
+	else:
+		loss_fn = nn.MSELoss()
 
+	#Create optimizer
+	optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
+
+	#Training and evaluating. We also save our model weights once per epoch
 	epoch_pbar = trange(args.num_epoch, desc="Epoch")
 	for epoch in epoch_pbar:
-		if args.model == 'logistic':
-			logistic_train_loop(trainloader, model, loss_fn, optimizer, device)
-			logistic_eval_loop(evalloader, model, device)
-		else:
-			train_loop(trainloader, model)
-			eval_loop(evalloader, model)
-		torch.save(model.state_dict(), "./model/{}".format(epoch))
+		train_loop(trainloader, model, loss_fn, optimizer, device, args.model)
+		eval_loop(evalloader, model, device, args.model)
+		torch.save(model.state_dict(), "./model/{}.pth".format(epoch), _use_new_zipfile_serialization=True)
 		pass
 
 
-def train_loop(dataloader, model, loss_fn, optimizer, device):
+def train_loop(dataloader, model, loss_fn, optimizer, device, model_type):
 	model.train()
 	for batch, (X, y) in enumerate(dataloader):
 		X, y = X.to(device), y.to(device)
+		if model_type in REGRESSION:
+			y = y.to(torch.float32)
 		pred = model(X)
 		loss = loss_fn(pred, y)
-		print('batch: ', batch)
-		print('loss: ', loss)
+
+		#print('batch: ', batch)
+		#print('loss: ', loss)
 		#Backpropagation
 		optimizer.zero_grad()
 		loss.backward()
 		optimizer.step()
 
 
-def eval_loop(dataloader, model, device):
+def eval_loop(dataloader, model, device, model_type):
 	model.eval()
 	correct = 0
 	total = 0
-	correct_trash = 0
-	total_trash = 0
+	correct_recycle = 0
+	total_recycle = 0
 	with torch.no_grad():
 		for images, labels in dataloader:
 			images, labels = images.to(device), labels.to(device)
 			outputs = model(images)
-			_, predicted = torch.max(outputs.data, 1)
+			if model_type in CNN:
+				_, predicted = torch.max(outputs.data, 1)
+				total += labels.size(0)
+				correct += (predicted == labels).sum().item()
 
-			total += labels.size(0)
-			correct += (predicted == labels).sum().item()
-			if args.check_recycle_acc:
-				predicted = predicted.numpy()
-				labels = labels.numpy()
-				for i in range(len(labels)):
-					if labels[i] == 0:
-						total_trash += 1
-						if predicted == 0:
-							correct_trash += 1
+				#Check our model performance for predicting recyclable object,
+				#default setting is set to true
+				if args.check_recycle_acc:
+					predicted = predicted.cpu().numpy()
+					labels = labels.cpu().numpy()
+					for i in range(len(labels)):
+						if labels[i] == 1:
+							total_recycle += 1
+							if predicted[i] == 1:
+								correct_recycle += 1
 
-			#print('total: ', total)
-			#print('correct: ', correct)
-	print('Accuracy of trash: ', correct_trash / total_trash)
+			elif model_type in REGRESSION:
+				prob = outputs.cpu().numpy()[0]
+				#Set 0.5 as our threshold for choosing between 0 and 1
+				pred = 1 if prob > 0.5 else 0
+				labels = labels.cpu().numpy()[0]
+				if pred == labels:
+					correct += 1
+				#Check performance for recyclable objects
+				if args.check_recycle_acc and labels == 1:
+					total_recycle += 1
+					if pred == 1:
+						correct_recycle += 1
+
+	if args.check_recycle_acc and total_recycle != 0:
+		print('Accuracy of recycle: ', correct_recycle / total_recycle)
 	print('Accuracy of the network on the %d test images: %d %%' % (len(dataloader.dataset),
-		100 * correct / total))
-
-def logistic_train_loop(dataloader, model, loss_fn, optimizer, device):
-	model.train()
-	for batch, (X, y) in enumerate(dataloader):
-		X, y = X.to(device), y.to(device)
-		pred = model(X)
-		#pred = pred.to(torch.float32)
-		y = y.to(torch.float32)
-		#print('pred: ', pred)
-		#print('y', y)
-		loss = loss_fn(pred, y)
-		print('batch: ', batch)
-		print('loss: ', loss)
-		##Backpropagation
-		optimizer.zero_grad()
-		loss.backward()
-		optimizer.step()
-
-def logistic_eval_loop(dataloader, model, device):
-	correct = 0
-	model.eval()
-	with torch.no_grad():
-		for images, labels in dataloader:
-			images, labels = images.to(device), labels.to(device)
-			outputs = model(images)
-			#print('output: ', outputs)
-			#print('output_', outputs.cpu().numpy())
-			prob = outputs.cpu().numpy()[0]
-			pred = 1 if prob > 0.5 else 0
-			labels = labels.cpu().numpy()[0]
-			if pred == labels:
-				correct += 1
-			#sys.exit()
-	print('accuracy: ', correct / len(dataloader))
-
-def train_imshow(loader):
-	classes = ('O', 'R')
-	dataiter = iter(loader)
-	images, labels = dataiter.next()
-	fig, axes = plt.subplots(figsize=(10, 4), ncols=5)
-	for i in range(5):
-		ax = axes[i]
-		ax.imshow(images[i].permute(1, 2, 0))  # permute?
-		ax.title.set_text(' '.join('%5s' % classes[labels[i]]))
-		print(images[i].shape)  # Not needed
-	plt.show()
-	print('images shape on batch size = {}'.format(images.size()))
-	print('labels shape on batch size = {}'.format(labels.size()))
-
-def get_pseudo_labels(dataset, model, device, threshold=0.8):
-	# This functions generates pseudo-labels of a dataset using given model.
-	# It returns an instance of DatasetFolder containing images whose prediction confidences exceed a given threshold.
-	# Construct a data loader.
-	data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
-	# Make sure the model is in eval mode.
-	model.eval()
-	# Define softmax function.
-	softmax = nn.Softmax(dim=-1)
-	# Iterate over the dataset by batches.
-	for batch in tqdm(data_loader):
-		img, _ = batch
-
-		with torch.no_grad():
-			logits = model(img.to(device))
-
-		# Obtain the probability distributions by applying softmax on logits.
-		probs = softmax(logits)
-
-		# Filter the data and construct a new dataset.
-		pseudo_set = []
-		for i in range(len(img)):
-			if probs[i].argmax(dim=0) > threshold:
-				pseudo_set.append(tuple([img[i], probs[i].argmax(dim=0)] ) )
-
-	# # Turn off the eval mode.
-	model.train()
-	return tuple(pseudo_set)
+		100 * correct / len(dataloader.dataset)))
 
 
 def parse_args():
@@ -211,7 +167,7 @@ def parse_args():
 	parser.add_argument(
 		"--num_epoch",
 		type=int,
-		default=3,
+		default=30,
 	)
 	parser.add_argument(
 		"--model",
